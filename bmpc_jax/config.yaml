@@ -23,7 +23,7 @@ encoder:
   encoder_dim: 256
   num_encoder_layers: 2
   learning_rate: 3e-4
-  tabulate: False
+  tabulate: True
 
 world_model:
   latent_dim: 512
@@ -32,17 +32,15 @@ world_model:
   num_bins: 101
   symlog_min: -10
   symlog_max: 10
-  symlog_obs: False
   simnorm_dim: 8
   learning_rate: 3e-4
   predict_continues: False
   dtype: float32
   max_grad_norm: 20
-  tabulate: False
+  tabulate: True
 
 tdmpc2:
   # Planning
-  mpc: True
   horizon: 3
   mppi_iterations: 6
   population_size: 512
@@ -55,13 +53,15 @@ tdmpc2:
   batch_size: 256
   discount: 0.99
   rho: 0.5
-  consistency_coef: 10
-  reward_coef: 0.1
-  value_coef: 0.1
-  continue_coef: 1.0
+  consistency_loss_scale: 10
+  reward_loss_scale: 0.1
+  value_loss_scale: 0.1
+  continue_loss_scale: 1.0
   tau: 0.01
 
 bmpc:
   reanalyze_interval: 10
   reanalyze_batch_size: 20
   reanalyze_horizon: 3
+  min_policy_std: 0.1
+  policy_std_scale: 1.5

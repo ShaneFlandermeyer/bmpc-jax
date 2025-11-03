@@ -39,7 +39,6 @@ class WorldModel(struct.PyTreeNode):
   symlog_min: float
   symlog_max: float
   predict_continues: bool = struct.field(pytree_node=False)
-  symlog_obs: bool = struct.field(pytree_node=False)
 
   @classmethod
   def create(cls,
@@ -56,7 +55,6 @@ class WorldModel(struct.PyTreeNode):
              symlog_max: float,
              simnorm_dim: int,
              predict_continues: bool,
-             symlog_obs: bool,
              # Optimization
              learning_rate: float,
              max_grad_norm: float = 20,
@@ -248,28 +246,29 @@ class WorldModel(struct.PyTreeNode):
         symlog_min=float(symlog_min),
         symlog_max=float(symlog_max),
         predict_continues=predict_continues,
-        symlog_obs=symlog_obs
     )
 
   @jax.jit
   def encode(self, obs: PyTree, params: Dict, key: PRNGKeyArray) -> jax.Array:
-    if self.symlog_obs:
-      obs = jax.tree.map(lambda x: symlog(x), obs)
-    z = self.encoder.apply_fn({'params': params}, obs, rngs={'dropout': key})
+    z = self.encoder.apply_fn(
+        {'params': params}, obs, rngs={'dropout': key}
+    ).astype(jnp.float32)
     return simnorm(z, simplex_dim=self.simnorm_dim)
 
   @jax.jit
   def next(self, z: jax.Array, a: jax.Array, params: Dict) -> jax.Array:
     z = self.dynamics_model.apply_fn(
         {'params': params}, jnp.concatenate([z, a], axis=-1)
-    )
+    ).astype(jnp.float32)
     return simnorm(z, simplex_dim=self.simnorm_dim)
 
   @jax.jit
   def reward(self, z: jax.Array, a: jax.Array, params: Dict
              ) -> Tuple[jax.Array, jax.Array]:
     z = jnp.concatenate([z, a], axis=-1)
-    logits = self.reward_model.apply_fn({'params': params}, z)
+    logits = self.reward_model.apply_fn(
+        {'params': params}, z
+    ).astype(jnp.float32)
     reward = two_hot_inv(
         logits, self.symlog_min, self.symlog_max, self.num_bins
     )
@@ -284,7 +283,7 @@ class WorldModel(struct.PyTreeNode):
                      ) -> Tuple[jax.Array, ...]:
     # Chunk the policy model output to get mean and logstd
     mean, log_std = jnp.split(
-        self.policy_model.apply_fn({'params': params}, z), 2, axis=-1
+        self.policy_model.apply_fn({'params': params}, z).astype(jnp.float32), 2, axis=-1
     )
     mean = jnp.tanh(mean)
     log_std = MIN_LOG_STD + (MAX_LOG_STD - MIN_LOG_STD) * \
@@ -303,7 +302,7 @@ class WorldModel(struct.PyTreeNode):
         ) -> Tuple[jax.Array, jax.Array]:
     logits = self.value_model.apply_fn(
         {'params': params}, z, rngs={'dropout': key}
-    )
+    ).astype(jnp.float32)
 
     V = two_hot_inv(logits, self.symlog_min, self.symlog_max, self.num_bins)
     return V, logits
