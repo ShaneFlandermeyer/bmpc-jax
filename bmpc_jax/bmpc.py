@@ -23,7 +23,6 @@ class BMPC(struct.PyTreeNode):
   kl_scale: jax.Array
 
   # Planning
-  mpc: bool
   horizon: int = struct.field(pytree_node=False)
   mppi_iterations: int = struct.field(pytree_node=False)
   population_size: int = struct.field(pytree_node=False)
@@ -32,23 +31,20 @@ class BMPC(struct.PyTreeNode):
   min_plan_std: float
   max_plan_std: float
   temperature: float
-  policy_std_scale: float
-  policy_std_bias: float
   # Optimization
   batch_size: int = struct.field(pytree_node=False)
   discount: float
   rho: float
-  consistency_coef: float
-  reward_coef: float
-  value_coef: float
-  continue_coef: float
+  consistency_loss_scale: float
+  reward_loss_scale: float
+  value_loss_scale: float
+  continue_loss_scale: float
   tau: float
 
   @classmethod
   def create(cls,
              world_model: WorldModel,
              # Planning
-             mpc: bool,
              horizon: int,
              mppi_iterations: int,
              population_size: int,
@@ -57,21 +53,18 @@ class BMPC(struct.PyTreeNode):
              min_plan_std: float,
              max_plan_std: float,
              temperature: float,
-             policy_std_scale: float,
-             policy_std_bias: float,
              # Optimization
              discount: float,
              batch_size: int,
              rho: float,
-             consistency_coef: float,
-             reward_coef: float,
-             value_coef: float,
-             continue_coef: float,
+             consistency_loss_scale: float,
+             reward_loss_scale: float,
+             value_loss_scale: float,
+             continue_loss_scale: float,
              tau: float
              ) -> BMPC:
 
     return cls(model=world_model,
-               mpc=mpc,
                horizon=horizon,
                mppi_iterations=mppi_iterations,
                population_size=population_size,
@@ -80,22 +73,22 @@ class BMPC(struct.PyTreeNode):
                min_plan_std=min_plan_std,
                max_plan_std=max_plan_std,
                temperature=temperature,
-               policy_std_scale=policy_std_scale,
-               policy_std_bias=policy_std_bias,
                discount=discount,
                batch_size=batch_size,
                rho=rho,
-               consistency_coef=consistency_coef,
-               reward_coef=reward_coef,
-               value_coef=value_coef,
-               continue_coef=continue_coef,
+               consistency_loss_scale=consistency_loss_scale,
+               reward_loss_scale=reward_loss_scale,
+               value_loss_scale=value_loss_scale,
+               continue_loss_scale=continue_loss_scale,
                tau=tau,
                kl_scale=jnp.array([1.0]),
                )
 
+  @partial(jax.jit, static_argnames=('mpc', 'deterministic', 'train'))
   def act(self,
           obs: PyTree,
           prev_plan: Optional[Tuple[jax.Array, jax.Array]] = None,
+          mpc: bool = True,
           deterministic: bool = False,
           train: bool = False,
           *,
@@ -108,7 +101,7 @@ class BMPC(struct.PyTreeNode):
         key=encoder_key
     )
 
-    if self.mpc:
+    if mpc:
       action, plan = self.plan(
           z=z,
           horizon=self.horizon,
@@ -125,7 +118,7 @@ class BMPC(struct.PyTreeNode):
       )[0]
       plan = None
 
-    return np.array(action), plan
+    return action, plan
 
   @partial(jax.jit, static_argnames=('horizon', 'deterministic', 'train'))
   def plan(self,
@@ -166,8 +159,6 @@ class BMPC(struct.PyTreeNode):
             self.model.sample_actions(
                 z=z_t,
                 params=self.model.policy_model.params,
-                std_scale=self.policy_std_scale,
-                std_bias=self.policy_std_bias,
                 key=prior_noise_keys[t]
             )[0]
         )
@@ -213,7 +204,9 @@ class BMPC(struct.PyTreeNode):
       ).clip(-1, 1)
 
       # Compute elites
-      values = self.estimate_value(z_t, actions, horizon, key=value_keys[i])
+      values = self.estimate_value(
+          z=z_t, actions=actions, horizon=horizon, key=value_keys[i]
+      )
       elite_values, elite_inds = jax.lax.top_k(values, self.num_elites)
       elite_actions = jnp.take_along_axis(
           actions, elite_inds[..., None, None], axis=-3
@@ -234,9 +227,9 @@ class BMPC(struct.PyTreeNode):
     if deterministic:  # Use best trajectory
       action_ind = jnp.argmax(elite_values, axis=-1)
     else:  # Sample from elites
-      key, final_mean_key = jax.random.split(key)
+      key, final_action_key = jax.random.split(key)
       action_ind = jax.random.categorical(
-          final_mean_key, logits=jnp.log(score), shape=batch_shape
+          final_action_key, logits=jnp.log(score), shape=batch_shape
       )
     action = jnp.take_along_axis(
         elite_actions, action_ind[..., None, None, None], axis=-3
@@ -250,18 +243,7 @@ class BMPC(struct.PyTreeNode):
     else:
       final_action = action[..., 0, :]
 
-    # Expert distribution centered about the best trajectory
-    expert_ind = jnp.argmax(elite_values, axis=-1)
-    expert_mean = jnp.take_along_axis(
-        elite_actions, expert_ind[..., None, None, None], axis=-3
-    ).squeeze(-3)
-    expert_std = jnp.sqrt(
-        jnp.sum(
-            score[..., None, None] *
-            (elite_actions - expert_mean[..., None, :, :])**2,
-            axis=-3
-        ) + 1e-6
-    )
+    expert_mean, expert_std = mean, std
 
     return final_action.clip(-1, 1), (mean, std, expert_mean, expert_std)
 
@@ -314,6 +296,8 @@ class BMPC(struct.PyTreeNode):
                             continue_params: flax.core.FrozenDict,
                             ) -> Tuple[jax.Array, Dict[str, Any]]:
       encoder_key, value_key = jax.random.split(key, 2)
+      lam = self.rho**jnp.arange(self.horizon)
+      lam /= jnp.sum(lam)
 
       ###########################################################
       # Encoder forward pass
@@ -322,7 +306,9 @@ class BMPC(struct.PyTreeNode):
           lambda x, y: jnp.stack([x, y], axis=0),
           observations, next_observations
       )
-      all_zs = self.model.encode(all_obs, encoder_params, encoder_key)
+      all_zs = self.model.encode(
+          obs=all_obs, params=encoder_params, key=encoder_key
+      )
       encoder_zs = jax.tree.map(lambda x: x[0], all_zs)
       next_zs = jax.tree.map(lambda x: x[1], all_zs)
 
@@ -331,30 +317,32 @@ class BMPC(struct.PyTreeNode):
       ###########################################################
       done = jnp.logical_or(terminated, truncated)
       finished = jnp.zeros((self.horizon, self.batch_size), dtype=bool)
-      latent_zs = jnp.zeros((self.horizon, self.batch_size, all_zs.shape[-1]))
+      latent_zs = jnp.zeros(
+          (self.horizon, self.batch_size, self.model.latent_dim)
+      )
       latent_zs = latent_zs.at[0].set(encoder_zs[0])
       consistency_loss = 0
       for t in range(self.horizon):
         z = self.model.next(latent_zs[t], actions[t], dynamics_params)
-        consistency_loss += self.rho**t * \
+        consistency_loss += lam[t] * \
             jnp.mean((z - sg(next_zs[t]))**2, where=~finished[t][:, None])
         if t < self.horizon-1:
           latent_zs = latent_zs.at[t+1].set(z)
           finished = finished.at[t+1].set(jnp.logical_or(finished[t], done[t]))
-      consistency_loss /= self.horizon
 
       ###########################################################
       # Reward loss
       ###########################################################
       _, reward_logits = self.model.reward(latent_zs, actions, reward_params)
-      reward_loss = jnp.mean(
-          self.rho**np.arange(self.horizon)[:, None] * soft_crossentropy(
-              reward_logits, rewards,
-              self.model.symlog_min,
-              self.model.symlog_max,
-              self.model.num_bins
-          ), where=~finished
-      )
+      reward_loss = jnp.sum(
+          lam[:, None] * soft_crossentropy(
+              pred_logits=reward_logits,
+              target=rewards,
+              low=self.model.symlog_min,
+              high=self.model.symlog_max,
+              num_bins=self.model.num_bins,
+          ), axis=0, where=~finished
+      ).mean()
 
       ###########################################################
       # Value loss
@@ -364,14 +352,15 @@ class BMPC(struct.PyTreeNode):
       # TD targets
       _, V_logits = self.model.V(latent_zs, value_params, key=value_key)
       td_targets = self.td_target(z=encoder_zs, key=value_target_key)
-      value_loss = jnp.mean(
-          self.rho**np.arange(self.horizon)[:, None] * soft_crossentropy(
-              V_logits, sg(td_targets),
-              self.model.symlog_min,
-              self.model.symlog_max,
-              self.model.num_bins
-          ), where=~finished
-      )
+      value_loss = jnp.sum(
+          lam[:, None] * soft_crossentropy(
+              pred_logits=V_logits,
+              target=sg(td_targets),
+              low=self.model.symlog_min,
+              high=self.model.symlog_max,
+              num_bins=self.model.num_bins,
+          ), axis=1, where=~finished
+      ).mean()
 
       ###########################################################
       # Continue loss
@@ -387,10 +376,10 @@ class BMPC(struct.PyTreeNode):
         continue_loss = 0.0
 
       total_loss = (
-          self.consistency_coef * consistency_loss +
-          self.reward_coef * reward_loss +
-          self.value_coef * value_loss +
-          self.continue_coef * continue_loss
+          self.consistency_loss_scale * consistency_loss +
+          self.reward_loss_scale * reward_loss +
+          self.value_loss_scale * value_loss +
+          self.continue_loss_scale * continue_loss
       )
 
       return total_loss, {
@@ -462,8 +451,6 @@ class BMPC(struct.PyTreeNode):
       action = self.model.sample_actions(
           z=z,
           params=self.model.policy_model.params,
-          std_scale=self.policy_std_scale,
-          std_bias=self.policy_std_bias,
           key=action_keys[t]
       )[0]
       reward, _ = self.model.reward(z, action, self.model.reward_model.params)
@@ -479,18 +466,11 @@ class BMPC(struct.PyTreeNode):
         ).squeeze(-1) > 0.5
         discount *= continues
 
-    # Subsample value networks
-    value_key, ensemble_key = jax.random.split(key, 2)
     Vs, _ = self.model.V(
-        z, self.model.target_value_model.params, key=value_key
+        z, self.model.target_value_model.params, key=key
     )
-    inds = jax.random.choice(
-        ensemble_key,
-        jnp.arange(0, self.model.num_value_nets),
-        shape=(2, ),
-        replace=False
-    )
-    V = Vs[inds].mean(axis=0)
+
+    V = Vs.mean(axis=0)
     td_target = G + discount * V
     return td_target
 
@@ -503,6 +483,8 @@ class BMPC(struct.PyTreeNode):
                     key: PRNGKeyArray
                     ):
     def policy_loss_fn(actor_params: flax.core.FrozenDict):
+      lam = self.rho**jnp.arange(self.horizon)
+      lam /= jnp.sum(lam)
       _, mean, log_std, log_probs = self.model.sample_actions(
           z=zs,
           params=actor_params,
@@ -517,10 +499,9 @@ class BMPC(struct.PyTreeNode):
           kl_div[0], self.kl_scale
       ).clip(1, None)
 
-      policy_loss = jnp.mean(
-          self.rho**jnp.arange(self.horizon)[:, None] * kl_div / sg(kl_scale),
-          where=~finished
-      )
+      policy_loss = jnp.sum(
+          lam[:, None] * kl_div / kl_scale, axis=0, where=~finished
+      ).mean()
 
       return policy_loss, {
           'policy_loss': policy_loss,

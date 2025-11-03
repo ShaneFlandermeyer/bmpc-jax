@@ -117,7 +117,6 @@ def train(cfg: dict):
   )
   replay_buffer = SequentialReplayBuffer(
       capacity=cfg.buffer_size,
-      vectorized=True,
       num_envs=env_config.num_envs,
       seed=cfg.seed,
       dummy_input=dict(
@@ -215,10 +214,12 @@ def train(cfg: dict):
         action, plan = agent.act(
             obs=observation,
             prev_plan=plan,
+            mpc=True,
             deterministic=False,
             train=True,
             key=action_key
         )
+        action = np.array(action)
         expert_mean, expert_std = plan[2][..., 0, :], plan[3][..., 0, :]
         if log_this_step:
           writer.scalar('train/plan_mean', np.mean(plan[0]), global_step)
@@ -238,7 +239,7 @@ def train(cfg: dict):
                 expert_mean=expert_mean,
                 expert_std=expert_std,
             ),
-            env_mask=~done
+            mask=~done
         )
       observation = next_observation
 
@@ -325,7 +326,9 @@ def train(cfg: dict):
             agent, policy_info = agent.update_policy(
                 zs=latent_zs,
                 expert_mean=batch['expert_mean'],
-                expert_std=batch['expert_std'],
+                expert_std=(
+                 batch['expert_std'] * bmpc_config.policy_std_scale 
+                ).clip(bmpc_config.min_policy_std, None),
                 finished=finished,
                 key=policy_key
             )
