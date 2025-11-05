@@ -323,10 +323,10 @@ def train(cfg: dict):
           # Update policy with reanalyzed samples
           if not pretrain:
             # Don't clip the std for the last 10% of steps
-            if global_step < 0.9*cfg.max_steps:
+            if global_step < 0.95*cfg.max_steps:
               expert_std = (
                   batch['expert_std'] * bmpc_config.policy_std_scale
-              ).clip(bmpc_config.min_policy_std, None)
+              ).clip(tdmpc_config.min_policy_std, None)
             else:
               expert_std = batch['expert_std']
             rng, policy_key = jax.random.split(rng)

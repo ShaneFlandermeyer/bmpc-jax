@@ -274,10 +274,13 @@ class WorldModel(struct.PyTreeNode):
     )
     return reward, logits
 
-  @jax.jit
+  @partial(jax.jit, static_argnames=('deterministic',))
   def sample_actions(self,
                      z: jax.Array,
                      params: Dict,
+                     deterministic: bool = False,
+                     min_std: Optional[float] = None,
+                     max_std: Optional[float] = None,
                      *,
                      key: PRNGKeyArray
                      ) -> Tuple[jax.Array, ...]:
@@ -288,11 +291,14 @@ class WorldModel(struct.PyTreeNode):
     mean = jnp.tanh(mean)
     log_std = MIN_LOG_STD + (MAX_LOG_STD - MIN_LOG_STD) * \
         0.5 * (jnp.tanh(log_std) + 1)
-    std = jnp.exp(log_std)
+    std = jnp.exp(log_std).clip(min_std, max_std)
 
     # Sample action and compute logprobs
     dist = tfd.MultivariateNormalDiag(loc=mean, scale_diag=std)
-    action = dist.sample(seed=key)
+    if deterministic:
+      action = mean
+    else:
+      action = dist.sample(seed=key)
     log_probs = dist.log_prob(action)
 
     return action.clip(-1, 1), mean, log_std, log_probs
