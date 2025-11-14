@@ -35,7 +35,7 @@ world_model:
   simnorm_dim: 8
   learning_rate: 3e-4
   predict_continues: False
-  dtype: float32
+  dtype: bfloat16
   max_grad_norm: 20
   tabulate: True
 
@@ -46,7 +46,7 @@ tdmpc2:
   population_size: 512
   policy_prior_samples: 24
   num_elites: 64
-  min_plan_std: 0
+  min_plan_std: 0.05
   max_plan_std: 2
   min_policy_std: 0.1
   temperature: 0.5
@@ -65,3 +65,5 @@ bmpc:
   reanalyze_batch_size: 20
   reanalyze_horizon: 3
   policy_std_scale: 1.5
+  final_policy_train_steps: 100_000
+

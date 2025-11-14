@@ -249,9 +249,7 @@ class BMPC(struct.PyTreeNode):
     else:
       final_action = action[..., 0, :]
 
-    expert_mean, expert_std = mean, std
-
-    return final_action.clip(-1, 1), (mean, std, expert_mean, expert_std)
+    return final_action.clip(-1, 1), (mean, std)
 
   @partial(jax.jit, static_argnames=('horizon'))
   def estimate_value(self,

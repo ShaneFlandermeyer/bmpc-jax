@@ -220,7 +220,7 @@ def train(cfg: dict):
             key=action_key
         )
         action = np.array(action)
-        expert_mean, expert_std = plan[2][..., 0, :], plan[3][..., 0, :]
+        expert_mean, expert_std = plan[0][..., 0, :], plan[1][..., 0, :]
         if log_this_step:
           writer.scalar('train/plan_mean', np.mean(plan[0]), global_step)
           writer.scalar('train/plan_std', np.mean(plan[1]), global_step)
@@ -307,8 +307,8 @@ def train(cfg: dict):
                 horizon=h,
                 key=reanalyze_key
             )
-            reanalyze_mean = reanalyzed_plan[2][..., 0, :]
-            reanalyze_std = reanalyzed_plan[3][..., 0, :]
+            reanalyze_mean = reanalyzed_plan[0][..., 0, :]
+            reanalyze_std = reanalyzed_plan[1][..., 0, :]
             # Update expert policy in buffer
             # Reshape for buffer: (T, B, A) -> (B, T, A)
             env_inds = batch_inds[0][:b, None]
@@ -322,8 +322,8 @@ def train(cfg: dict):
 
           # Update policy with reanalyzed samples
           if not pretrain:
-            # Don't clip the std for the last 10% of steps
-            if global_step < 0.95*cfg.max_steps:
+            remaining_steps = cfg.max_steps - global_step
+            if remaining_steps > bmpc_config.final_policy_train_steps:
               expert_std = (
                   batch['expert_std'] * bmpc_config.policy_std_scale
               ).clip(tdmpc_config.min_policy_std, None)
