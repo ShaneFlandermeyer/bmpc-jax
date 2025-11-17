@@ -28,9 +28,12 @@ class BMPC(struct.PyTreeNode):
   population_size: int = struct.field(pytree_node=False)
   policy_prior_samples: int = struct.field(pytree_node=False)
   num_elites: int = struct.field(pytree_node=False)
+  normalize_elite_values: bool = struct.field(pytree_node=False)
+  normalized_elite_scale: float
   min_plan_std: float
   max_plan_std: float
   min_policy_std: float
+  max_policy_std: float
   temperature: float
   # Optimization
   batch_size: int = struct.field(pytree_node=False)
@@ -51,9 +54,12 @@ class BMPC(struct.PyTreeNode):
              population_size: int,
              policy_prior_samples: int,
              num_elites: int,
+             normalize_elite_values: bool,
+             normalized_elite_scale: float,
              min_plan_std: float,
              max_plan_std: float,
              min_policy_std: float,
+             max_policy_std: float,
              temperature: float,
              # Optimization
              discount: float,
@@ -72,9 +78,12 @@ class BMPC(struct.PyTreeNode):
                population_size=population_size,
                policy_prior_samples=policy_prior_samples,
                num_elites=num_elites,
+               normalize_elite_values=normalize_elite_values,
+               normalized_elite_scale=normalized_elite_scale,
                min_plan_std=min_plan_std,
                max_plan_std=max_plan_std,
                min_policy_std=min_policy_std,
+               max_policy_std=max_policy_std,
                temperature=temperature,
                discount=discount,
                batch_size=batch_size,
@@ -165,6 +174,7 @@ class BMPC(struct.PyTreeNode):
                 params=self.model.policy_model.params,
                 deterministic=False,
                 min_std=self.min_policy_std,
+                max_std=self.max_policy_std,
                 key=prior_noise_keys[t]
             )[0]
         )
@@ -217,6 +227,15 @@ class BMPC(struct.PyTreeNode):
       elite_actions = jnp.take_along_axis(
           actions, elite_inds[..., None, None], axis=-3
       )
+
+      if self.normalize_elite_values:
+        # Normalize elites to make softmax invariant to value scale as in [1]
+        # [1] Williams2016 - Aggressive driving with model predictive integral control
+        scale = self.normalized_elite_scale / (
+            self.temperature * abs(elite_values).mean(axis=-1).clip(1, None)
+            + 1e-8
+        )
+        elite_values = scale[..., None] * elite_values
 
       # Update population distribution
       score = jax.nn.softmax(self.temperature * elite_values)
