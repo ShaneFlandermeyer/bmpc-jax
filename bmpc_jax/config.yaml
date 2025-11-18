@@ -52,7 +52,7 @@ tdmpc2:
   min_policy_std: 0.1
   max_policy_std: 0.3  
   normalize_elite_values: True
-  normalized_elite_scale: 25
+  normalized_elite_scale: 30
   # Optimization
   batch_size: 256
   discount: 0.99
@@ -67,6 +67,5 @@ bmpc:
   reanalyze_interval: 10
   reanalyze_batch_size: 20
   reanalyze_horizon: 3
-  policy_std_scale: 1.5
   final_policy_train_steps: 100_000
 

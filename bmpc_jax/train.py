@@ -324,9 +324,9 @@ def train(cfg: dict):
           if not pretrain:
             remaining_steps = cfg.max_steps - global_step
             if remaining_steps > bmpc_config.final_policy_train_steps:
-              expert_std = (
-                  batch['expert_std'] * bmpc_config.policy_std_scale
-              ).clip(tdmpc_config.min_policy_std, tdmpc_config.max_policy_std)
+              expert_std = batch['expert_std'].clip(
+                  tdmpc_config.min_policy_std, tdmpc_config.max_policy_std
+              )
             else:
               expert_std = batch['expert_std']
             rng, policy_key = jax.random.split(rng)
