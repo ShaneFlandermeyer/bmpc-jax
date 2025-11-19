@@ -68,4 +68,6 @@ bmpc:
   reanalyze_batch_size: 20
   reanalyze_horizon: 3
   final_policy_train_steps: 100_000
+  policy_std_scale: 1.0
+  policy_std_bias: 0.0
 
