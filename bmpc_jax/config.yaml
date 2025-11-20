@@ -52,7 +52,7 @@ tdmpc2:
   min_policy_std: 0.1
   max_policy_std: 0.3  
   normalize_elite_values: True
-  normalized_elite_scale: 30
+  normalized_elite_scale: 50
   # Optimization
   batch_size: 256
   discount: 0.99

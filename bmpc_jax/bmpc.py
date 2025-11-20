@@ -231,9 +231,15 @@ class BMPC(struct.PyTreeNode):
       if self.normalize_elite_values:
         # Normalize elites to make softmax invariant to value scale as in [1]
         # [1] Williams2016 - Aggressive driving with model predictive integral control
-        max_value = abs(elite_values).max(axis=-1, keepdims=True)
-        elite_values *= self.normalized_elite_scale / \
-            (max_value.clip(1, None) * self.temperature)
+        elite_values = elite_values - \
+            elite_values.min(axis=-1, keepdims=True).clip(None, 0)
+        mean_value = elite_values.mean(axis=-1, keepdims=True)
+        scale = self.normalized_elite_scale / self.temperature
+        elite_values = jnp.where(
+            mean_value > self.normalized_elite_scale,
+            elite_values / mean_value * scale,
+            elite_values
+        )
 
       # Update population distribution
       score = jax.nn.softmax(self.temperature * elite_values)
@@ -354,7 +360,9 @@ class BMPC(struct.PyTreeNode):
       ###########################################################
       # Reward loss
       ###########################################################
-      _, reward_logits = self.model.reward(latent_zs, actions, reward_params)
+      reward_pred, reward_logits = self.model.reward(
+          latent_zs, actions, reward_params
+      )
       reward_loss = jnp.sum(
           lam[:, None] * soft_crossentropy(
               pred_logits=reward_logits,
@@ -365,22 +373,36 @@ class BMPC(struct.PyTreeNode):
           ), axis=0, where=~finished
       ).mean()
 
+      reward_mae = jnp.sum(
+          lam[:, None] * abs(rewards - reward_pred), axis=0, where=~finished
+      ).mean()
+
       ###########################################################
       # Value loss
       ###########################################################
       value_key, value_target_key = jax.random.split(value_key, 2)
 
       # TD targets
-      _, V_logits = self.model.V(latent_zs, value_params, key=value_key)
+      value_pred, value_logits = self.model.V(
+          latent_zs, value_params, key=value_key
+      )
       td_targets = self.td_target(z=encoder_zs, key=value_target_key)
       value_loss = jnp.sum(
           lam[:, None] * soft_crossentropy(
-              pred_logits=V_logits,
+              pred_logits=value_logits,
               target=sg(td_targets),
               low=self.model.symlog_min,
               high=self.model.symlog_max,
               num_bins=self.model.num_bins,
           ), axis=1, where=~finished
+      ).mean()
+
+      value_mae = jnp.sum(
+          lam[:, None] * abs(td_targets - value_pred), axis=1, where=~finished
+      ).mean()
+      value_scale = jnp.diff(
+          jnp.percentile(value_pred[:, 0], jnp.array([5, 95]), axis=-1),
+          axis=0
       ).mean()
 
       ###########################################################
@@ -412,6 +434,10 @@ class BMPC(struct.PyTreeNode):
           'encoder_zs': encoder_zs,
           'latent_zs': latent_zs,
           'finished': finished,
+          # Additional logging metrics
+          'reward_mae': reward_mae,
+          'value_mae': value_mae,
+          'value_scale': value_scale,
       }
 
     # Update world model
