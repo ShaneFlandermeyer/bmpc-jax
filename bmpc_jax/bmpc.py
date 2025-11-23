@@ -231,15 +231,10 @@ class BMPC(struct.PyTreeNode):
       if self.normalize_elite_values:
         # Normalize elites to make softmax invariant to value scale as in [1]
         # [1] Williams2016 - Aggressive driving with model predictive integral control
-        elite_values = elite_values - \
-            elite_values.min(axis=-1, keepdims=True).clip(None, 0)
-        mean_value = elite_values.mean(axis=-1, keepdims=True)
-        scale = self.normalized_elite_scale / self.temperature
-        elite_values = jnp.where(
-            mean_value > self.normalized_elite_scale,
-            elite_values / mean_value * scale,
-            elite_values
-        )
+        mean_value = (
+            values - values.min(axis=-1, keepdims=True).clip(None, 0)
+        ).mean(axis=-1, keepdims=True).clip(1, None)
+        elite_values = elite_values / mean_value * self.normalized_elite_scale
 
       # Update population distribution
       score = jax.nn.softmax(self.temperature * elite_values)
